@@ -132,22 +132,7 @@ export default function ResultsPage() {
     return (
       <section className="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center space-y-4">
         {timeLeft !== null ? (
-          <>
-            <p className="text-indigo-300">
-              Voting ends in{" "}
-              {formatSecondsToHHMMSS(timeLeft)}
-            </p>
-            <div className="w-full max-w-md bg-gray-700 h-3 rounded-full">
-              <div
-                className="h-3 rounded-full bg-indigo-500 transition-all"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-indigo-500"/>
-            <p className="text-indigo-300 font-semibold">
-              {loadingMessages[msgIndex]}
-            </p>
-          </>
+          
         ) : (
           <>
             <div className="text-center py-16">
@@ -195,26 +180,7 @@ export default function ResultsPage() {
               </p>
             </motion.div>
 
-            <div className="grid md:grid-cols-3 gap-6">
-              {candidates.map((c, i) => (
-                <div
-                  key={c.candidateId}
-                  className={`bg-gray-800 p-6 rounded-lg ${
-                    c.candidateId === winner.candidateId
-                      ? "border-4 border-indigo-600"
-                      : ""
-                  }`}
-                >
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-xl font-semibold">{c.name}</h3>
-                    <span className="text-indigo-400 font-bold">
-                      {c.votes}
-                    </span>
-                  </div>
-                  <p className="text-indigo-200 mb-2">"{c.slogan}"</p>
-                </div>
-              ))}
-            </div>
+           
           </>
         )}
       </div>

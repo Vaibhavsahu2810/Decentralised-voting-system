@@ -118,102 +118,118 @@ contract Voting is ReentrancyGuard {
         emit DIDRegistryUpdated(_didRegistryCID);
     }
 
-    // --- Admin Functions ---
-    function updateDIDRegistry(string memory _cid) external onlySuperAdmin {
-        didRegistryCID = _cid;
-        emit DIDRegistryUpdated(_cid);
+    
+
+    /// @notice Starts the election period
+    /// @param durationMinutes Duration in minutes (must be > 0)
+    function startElection(uint256 durationMinutes) external onlyAdmin notPaused {
+        require(detailsSet, "Details not set");
+        require(durationMinutes > 0, "Must be > 0");
+        require(votingStart == 0 || block.timestamp > votingEnd, "Ongoing election");
+
+        votingStart = block.timestamp;
+        votingEnd   = votingStart + (durationMinutes * 60);   // Use provided duration
+        emit ElectionStarted(votingStart, votingEnd);
     }
 
-    function addAdmin(address _admin) external onlySuperAdmin {
-        require(!admins[_admin], "Already admin");
-        admins[_admin] = true;
-        emit AdminAdded(_admin);
+    // --- Registration & Candidates ---
+
+    /// @notice Registers a voter—only *before* the election starts
+    function registerVoter(
+        string memory _name,
+        string memory _phone,
+        string memory _did
+    ) external notPaused {
+        require(votingStart == 0, "Registration closed");
+        require(!voters[msg.sender].isRegistered, "Already registered");
+
+        voters[msg.sender] = Voter(msg.sender, _name, _phone, _did, false, true);
+        voterCount++;
+        registeredVoters.push(msg.sender);
+        emit VoterRegistered(msg.sender, _name);
     }
 
-    function removeAdmin(address _admin) external onlySuperAdmin {
-        require(admins[_admin], "Not an admin");
-        admins[_admin] = false;
-        emit AdminRemoved(_admin);
+    function verifyVoter(address _voter, string memory _did) external onlyAdmin notPaused {
+        require(voters[_voter].isRegistered, "Not registered");
+        require(
+            keccak256(abi.encodePacked(voters[_voter].did)) == keccak256(abi.encodePacked(_did)),
+            "DID mismatch"
+        );
+
+        voters[_voter].isVerified = true;
+        emit VoterVerified(_voter);
     }
 
-        /// @notice Resets all per-election state so you can run another election
-    function resetElection() external onlyAdmin notPaused {
-        require(votingStart == 0 || (votingEnd != 0 && block.timestamp > votingEnd), "Election must be ended");
+    function addCandidate(string memory _name, string memory _slogan) external onlyAdmin notPaused {
+        require(bytes(_name).length > 0, "Name required");
+        bytes32 hash = keccak256(abi.encodePacked(_name));
+        require(!candidateNameExists[hash], "Duplicate candidate");
+
+        candidates[candidateCount] = Candidate(candidateCount, _name, _slogan, 0);
+        candidateNameExists[hash] = true;
+        candidateHashes.push(hash);
+        emit CandidateAdded(candidateCount, _name);
+        candidateCount++;
+    }
+
+    // --- Voting ---
+    function vote(uint256 _candidateId)
+        external
+        onlyWhenVotingActive
+        notPaused
+        nonReentrant
+    {
+        require(voters[msg.sender].isVerified, "Not verified");
+        require(!hasVoted[msg.sender], "Already voted");
+        require(_candidateId < candidateCount, "Invalid candidate");
+        require(
+            candidates[_candidateId].votes < election.maxVotesPerCandidate,
+            "Vote limit reached"
+        );
+
+        // Cast the vote
+        candidates[_candidateId].votes++;
+        hasVoted[msg.sender] = true;
+        votedVoters.push(msg.sender);
+        totalVotesCast++;
+        emit VoteCast(msg.sender, _candidateId);
+
+        // Update leader incrementally (avoids gas‐heavy loops)
+        if (candidates[_candidateId].votes > highestVotes) {
+            highestVotes = candidates[_candidateId].votes;
+            leadingCandidate = _candidateId;
+        }
+    }
+
+    // --- Election Conclusion ---
+    function endElection() public onlyAdmin notPaused {
         votingStart = 0;
-        votingEnd   = 0;
+        emit ElectionEnded(block.timestamp);
+    }
 
-        // Clear candidates and name registry
-        for (uint256 i = 0; i < candidateCount; i++) {
-            delete candidates[i];
-        }
-        for (uint256 i = 0; i < candidateHashes.length; i++) {
-            candidateNameExists[candidateHashes[i]] = false;
-        }
-        delete candidateHashes;
-        candidateCount = 0;
+    // --- Results ---
+    function declareWinner()
+        external
+        onlyAdmin
+        onlyWhenVotingEnded
+        notPaused
+        returns (
+            uint256 winnerId,
+            string memory winnerName,
+            uint256 maxVotes
+        )
+    {
+        winnerId  = leadingCandidate;
+        winnerName = candidates[leadingCandidate].name;
+        maxVotes  = highestVotes;
+        emit WinnerDeclared(winnerId, winnerName, maxVotes);
+    }
 
-        // Clear vote state
-        for (uint256 i = 0; i < votedVoters.length; i++) {
-            hasVoted[votedVoters[i]] = false;
-        }
-
-        // Clear voter registry
-        for (uint i = 0; i < registeredVoters.length; i++) {
-            delete voters[registeredVoters[i]];
-        }
-        delete registeredVoters;
-        voterCount = 0;
-        delete votedVoters;
-        totalVotesCast = 0;
-
-        // Clear election details
-        detailsSet = false;
-        delete election;
-
-        // Reset leader tracking
-        leadingCandidate = 0;
-        highestVotes     = 0;
-
-        emit ElectionReset();
+    // --- Pause ---
+    function pauseContract(bool _pause) external onlySuperAdmin {
+        isPaused = _pause;
+        emit ContractPaused(_pause);
     }
 
 
-    // --- Election Setup ---
-    function setElectionDetails(
-        string memory _adminName,
-        string memory _adminEmail,
-        string memory _adminTitle,
-        string memory _electionTitle,
-        string memory _organizationTitle,
-        uint256 _maxVotes
-    ) external onlyAdmin notPaused {
-        require(bytes(_electionTitle).length > 0, "Title required");
-        require(_maxVotes > 0, "Max votes must be > 0");
-
-        election = ElectionDetails({
-            adminName: _adminName,
-            adminEmail: _adminEmail,
-            adminTitle: _adminTitle,
-            electionTitle: _electionTitle,
-            organizationTitle: _organizationTitle,
-            maxVotesPerCandidate: _maxVotes
-        });
-        detailsSet = true;
-        emit ElectionDetailsSet(_electionTitle, _maxVotes);
-    }
-
-
-    // --- Helpers ---
-    function getCandidateCount() external view returns (uint256) {
-        return candidateCount;
-    }
-
-    function getVoter(address _voter) external view returns (Voter memory) {
-        return voters[_voter];
-    }
-
-    function getVoterTurnout() external view returns (uint256 turnoutPercentage) {
-        if (voterCount == 0) return 0;
-        return (totalVotesCast * 100) / voterCount;
-    }
 }
