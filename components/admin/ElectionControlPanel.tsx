@@ -1,223 +1,352 @@
-// app/results/page.tsx
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
-import Web3 from "web3";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
-import SignHeader from "@/components/ui/signHeader";
-import { votingAbi, votingAddress } from "../artifacts/votingArtifact.js";
+import axios from "axios";
+import { showToast, showToastPromise } from "../../pages/api/admin/showToast";
 
-interface Candidate {
-  candidateId: number;
-  name:        string;
-  slogan:      string;
-  votes:       number;
+interface ElectionControlPanelProps {
+  electionStatus: "not_started" | "running" | "ended";
+  detailsSet?: boolean;
+  onUpdate: () => void;
 }
 
-interface Winner {
-  candidateId: number;
-  name:        string;
-  votes:       number;
-}
+export function ElectionControlPanel({ 
+  electionStatus, 
+  detailsSet = false, 
+  onUpdate 
+}: ElectionControlPanelProps) {
+  const [showSetupForm, setShowSetupForm] = useState(false);
+  const [setupData, setSetupData] = useState({
+    adminName: "",
+    adminEmail: "",
+    adminTitle: "",
+    electionTitle: "",
+    organizationTitle: "",
+    maxVotes: 1000,
+  });
+  const [startDuration, setStartDuration] = useState(60); // minutes
+  const [newCandidate, setNewCandidate] = useState({ name: "", slogan: "" });
+  const [showAddCandidate, setShowAddCandidate] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-const loadingMessages = [
-  "Counting votes securely…",
-  "Analyzing on-chain data…",
-  "Finalizing results…",
-];
+  const handleElectionSetup = async () => {
+    if (!setupData.electionTitle) {
+      showToast("Election title is required", "error");
+      return;
+    }
 
-function formatSecondsToHHMMSS(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  return [h, m, s]
-    .map((val) => val.toString().padStart(2, "0"))
-    .join(":");
-}
+    setLoading(true);
+    try {
+      const response = await axios.post("/api/admin/dashboard/election-control", {
+        action: "setElectionDetails",
+        ...setupData,
+      });
 
-export default function ResultsPage() {
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [winner,     setWinner]     = useState<Winner|null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [msgIndex,   setMsgIndex]   = useState(0);
-  const [timeLeft,   setTimeLeft]   = useState<number|null>(null);
-  const [percent,    setPercent]    = useState(100);
-
-  const startRef = useRef<number>(0);
-  const endRef   = useRef<number>(0);
-
-  // cycle loading messages every 3s
-  useEffect(() => {
-    const iv = setInterval(() => {
-      setMsgIndex(i => (i + 1) % loadingMessages.length);
-    }, 3000);
-    return () => clearInterval(iv);
-  }, []);
-
-  useEffect(() => {
-    const fetchResults = async () => {
-      const web3   = new Web3(process.env.NEXT_PUBLIC_RPC_URL || "http://127.0.0.1:8545");
-      const voting = new web3.eth.Contract(votingAbi as any, votingAddress);
-      try {
-        // First check if voting has been started
-        const votingStart = Number(await voting.methods.votingStart().call());
-        const votingEnd = Number(await voting.methods.votingEnd().call());
-        const detailsSet = await voting.methods.detailsSet().call();
-        
-        // If no election has been set up or started, show appropriate message
-        if (!detailsSet || votingStart === 0) {
-          setLoading(false);
-          return;
-        }
-
-        // get votingEnd timestamp on-chain
-        endRef.current   = votingEnd;
-        // grab the block timestamp when we start
-        const block      = await web3.eth.getBlock("latest");
-        startRef.current = Number(block.timestamp);
-
-        // If voting is still ongoing, show countdown
-        if (Date.now() / 1000 < votingEnd) {
-          // update progress bar until votingEnd
-          const barInterval = setInterval(() => {
-            const now     = Date.now() / 1000;
-            const total   = endRef.current - startRef.current;
-            const elapsed = now - startRef.current;
-            const left    = Math.max(0, endRef.current - now);
-            setTimeLeft(left);
-            setPercent(Math.max(0, 100 - (elapsed / total) * 100));
-            if (now >= endRef.current) {
-              clearInterval(barInterval);
-              // Refresh the page to show results
-              window.location.reload();
-            }
-          }, 1000);
-
-          return; // Stay in loading state while voting is active
-        }
-
-        // Voting has ended, fetch results
-        const count = Number(await voting.methods.getCandidateCount().call());
-        const arr: Candidate[] = [];
-        for (let i = 0; i < count; i++) {
-          const c: any = await voting.methods.candidates(i).call();
-          arr.push({
-            candidateId: i + 1,
-            name:        c.name,
-            slogan:      c.slogan,
-            votes:       Number(c.votes),
-          });
-        }
-
-        // pick the top vote-getter
-        let top = arr[0] || null;
-        for (const cand of arr) {
-          if (top === null || cand.votes > top.votes) top = cand;
-        }
-
-        setCandidates(arr);
-        if (top) setWinner({ candidateId: top.candidateId, name: top.name, votes: top.votes });
-      } catch (err) {
-        console.error("Results fetch error:", err);
-      } finally {
-        setLoading(false);
+      if (response.data.success) {
+        showToast("Election details set successfully!", "success");
+        setShowSetupForm(false);
+        onUpdate();
+      } else {
+        showToast(response.data.message || "Failed to set election details", "error");
       }
-    };
+    } catch (error: any) {
+      showToast(error.response?.data?.message || "Error setting election details", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    fetchResults();
-  }, []);
+  const handleStartElection = async () => {
+    if (!detailsSet) {
+      showToast("Please set election details first", "error");
+      return;
+    }
 
-  // Loading state - voting active or not started
-  if (loading) {
-    return (
-      <section className="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center space-y-4">
-        {timeLeft !== null ? (
-          <>
-            <p className="text-indigo-300">
-              Voting ends in{" "}
-              {formatSecondsToHHMMSS(timeLeft)}
-            </p>
-            <div className="w-full max-w-md bg-gray-700 h-3 rounded-full">
-              <div
-                className="h-3 rounded-full bg-indigo-500 transition-all"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-indigo-500"/>
-            <p className="text-indigo-300 font-semibold">
-              {loadingMessages[msgIndex]}
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="text-center py-16">
-              <h2 className="text-2xl font-bold text-indigo-400 mb-4">Election Not Started</h2>
-              <p className="text-gray-400 text-lg mb-2">
-                The election has not been started by the admin yet.
-              </p>
-              <p className="text-gray-500">
-                Please wait for the admin to set up and start the voting process.
-              </p>
-            </div>
-          </>
-        )}
-      </section>
-    );
-  }
+    setLoading(true);
+    const promise = axios.post("/api/admin/dashboard/election-control", {
+      action: "startElection",
+      durationMinutes: startDuration,
+    });
+
+    showToastPromise(promise, {
+      loading: "Starting election...",
+      success: "Election started successfully!",
+      error: "Failed to start election",
+    }).then(() => {
+      onUpdate();
+      setLoading(false);
+    }).catch(() => {
+      setLoading(false);
+    });
+  };
+
+  const handleEndElection = async () => {
+    setLoading(true);
+    const promise = axios.post("/api/admin/dashboard/election-control", {
+      action: "endElection",
+    });
+
+    showToastPromise(promise, {
+      loading: "Ending election...",
+      success: "Election ended successfully!",
+      error: "Failed to end election",
+    }).then(() => {
+      onUpdate();
+      setLoading(false);
+    }).catch(() => {
+      setLoading(false);
+    });
+  };
+
+  const handleDeclareWinner = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.post("/api/admin/dashboard/election-control", {
+        action: "declareWinner",
+      });
+
+      if (response.data.success) {
+        const { winner } = response.data;
+        showToast(
+          `Winner: ${winner.winnerName} with ${winner.maxVotes} votes!`,
+          "success"
+        );
+        onUpdate();
+      } else {
+        showToast(response.data.message || "Failed to declare winner", "error");
+      }
+    } catch (error: any) {
+      showToast(error.response?.data?.message || "Error declaring winner", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddCandidate = async () => {
+    if (!newCandidate.name) {
+      showToast("Candidate name is required", "error");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await axios.post("/api/admin/dashboard/election-control", {
+        action: "addCandidate",
+        name: newCandidate.name,
+        slogan: newCandidate.slogan,
+      });
+
+      if (response.data.success) {
+        showToast("Candidate added successfully!", "success");
+        setNewCandidate({ name: "", slogan: "" });
+        setShowAddCandidate(false);
+        onUpdate();
+      } else {
+        showToast(response.data.message || "Failed to add candidate", "error");
+      }
+    } catch (error: any) {
+      showToast(error.response?.data?.message || "Error adding candidate", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <section className="bg-gray-950 text-white min-h-screen">
-      <SignHeader/>
-      <div className="container mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold text-center mb-8 text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-indigo-200">
-          Election Results
-        </h1>
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-gray-800 p-6 rounded-lg border border-gray-700"
+    >
+      <h3 className="text-lg font-semibold mb-4 text-indigo-400">Election Control</h3>
 
-        {!winner ? (
-          <div className="text-center py-16">
-            <p className="text-indigo-400 text-xl">No results available.</p>
-          </div>
-        ) : (
-          <>
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="max-w-lg mx-auto bg-gray-800 p-6 rounded-lg mb-8 text-center shadow-lg"
-            >
-              <h2 className="text-2xl font-bold mb-2">Winner</h2>
-              <p className="text-xl">{winner.name}</p>
-              <p className="mt-1 text-white/80">
-                Candidate ID: {winner.candidateId}
-              </p>
-              <p className="mt-2 text-lg text-green-400">
-                Votes: {winner.votes}
-              </p>
-            </motion.div>
-
-            <div className="grid md:grid-cols-3 gap-6">
-              {candidates.map((c, i) => (
-                <div
-                  key={c.candidateId}
-                  className={`bg-gray-800 p-6 rounded-lg ${
-                    c.candidateId === winner.candidateId
-                      ? "border-4 border-indigo-600"
-                      : ""
-                  }`}
-                >
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-xl font-semibold">{c.name}</h3>
-                    <span className="text-indigo-400 font-bold">
-                      {c.votes}
-                    </span>
-                  </div>
-                  <p className="text-indigo-200 mb-2">"{c.slogan}"</p>
-                </div>
-              ))}
+      <div className="space-y-4">
+        {/* Election Setup */}
+        {!detailsSet && (
+          <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+            <div className="flex justify-between items-center">
+              <div>
+                <h4 className="font-medium text-yellow-400">Setup Required</h4>
+                <p className="text-sm text-gray-400">Configure election details before starting</p>
+              </div>
+              <button
+                onClick={() => setShowSetupForm(!showSetupForm)}
+                className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded transition"
+                disabled={loading}
+              >
+                {showSetupForm ? "Cancel" : "Setup"}
+              </button>
             </div>
-          </>
+
+            {showSetupForm && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="mt-4 space-y-3"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Admin Name"
+                    value={setupData.adminName}
+                    onChange={(e) => setSetupData({ ...setupData, adminName: e.target.value })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                  />
+                  <input
+                    type="email"
+                    placeholder="Admin Email"
+                    value={setupData.adminEmail}
+                    onChange={(e) => setSetupData({ ...setupData, adminEmail: e.target.value })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Admin Title"
+                    value={setupData.adminTitle}
+                    onChange={(e) => setSetupData({ ...setupData, adminTitle: e.target.value })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Election Title *"
+                    value={setupData.electionTitle}
+                    onChange={(e) => setSetupData({ ...setupData, electionTitle: e.target.value })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                    required
+                  />
+                  <input
+                    type="text"
+                    placeholder="Organization Title"
+                    value={setupData.organizationTitle}
+                    onChange={(e) => setSetupData({ ...setupData, organizationTitle: e.target.value })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Max Votes Per Candidate"
+                    value={setupData.maxVotes}
+                    onChange={(e) => setSetupData({ ...setupData, maxVotes: parseInt(e.target.value) || 1000 })}
+                    className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                    min="1"
+                  />
+                </div>
+                <button
+                  onClick={handleElectionSetup}
+                  disabled={loading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded transition disabled:opacity-50"
+                >
+                  {loading ? "Setting up..." : "Set Election Details"}
+                </button>
+              </motion.div>
+            )}
+          </div>
         )}
+
+        {/* Add Candidate */}
+        {detailsSet && electionStatus === "not_started" && (
+          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+            <div className="flex justify-between items-center">
+              <div>
+                <h4 className="font-medium text-blue-400">Add Candidates</h4>
+                <p className="text-sm text-gray-400">Add candidates before starting election</p>
+              </div>
+              <button
+                onClick={() => setShowAddCandidate(!showAddCandidate)}
+                className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded transition"
+                disabled={loading}
+              >
+                {showAddCandidate ? "Cancel" : "Add Candidate"}
+              </button>
+            </div>
+
+            {showAddCandidate && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="mt-4 space-y-3"
+              >
+                <input
+                  type="text"
+                  placeholder="Candidate Name *"
+                  value={newCandidate.name}
+                  onChange={(e) => setNewCandidate({ ...newCandidate, name: e.target.value })}
+                  className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Campaign Slogan"
+                  value={newCandidate.slogan}
+                  onChange={(e) => setNewCandidate({ ...newCandidate, slogan: e.target.value })}
+                  className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-indigo-500 outline-none"
+                />
+                <button
+                  onClick={handleAddCandidate}
+                  disabled={loading}
+                  className="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded transition disabled:opacity-50"
+                >
+                  {loading ? "Adding..." : "Add Candidate"}
+                </button>
+              </motion.div>
+            )}
+          </div>
+        )}
+
+        {/* Election Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Start Election */}
+          {electionStatus === "not_started" && detailsSet && (
+            <div className="space-y-2">
+              <label className="text-sm text-gray-400">Duration (minutes)</label>
+              <input
+                type="number"
+                value={startDuration}
+                onChange={(e) => setStartDuration(parseInt(e.target.value) || 60)}
+                className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:border-green-500 outline-none"
+                min="1"
+                max="10080" // Max 1 week
+              />
+              <button
+                onClick={handleStartElection}
+                disabled={loading}
+                className="w-full bg-green-600 hover:bg-green-700 px-4 py-2 rounded transition disabled:opacity-50"
+              >
+                {loading ? "Starting..." : "Start Election"}
+              </button>
+            </div>
+          )}
+
+          {/* End Election */}
+          {electionStatus === "running" && (
+            <button
+              onClick={handleEndElection}
+              disabled={loading}
+              className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded transition disabled:opacity-50"
+            >
+              {loading ? "Ending..." : "End Election"}
+            </button>
+          )}
+
+          {/* Declare Winner */}
+          {electionStatus === "ended" && (
+            <button
+              onClick={handleDeclareWinner}
+              disabled={loading}
+              className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded transition disabled:opacity-50"
+            >
+              {loading ? "Declaring..." : "Declare Winner"}
+            </button>
+          )}
+        </div>
+
+        {/* Status Info */}
+        <div className="text-sm text-gray-400">
+          <p>
+            Status: <span className="text-white">{electionStatus.replace("_", " ").toUpperCase()}</span>
+          </p>
+          {!detailsSet && <p className="text-yellow-400">⚠️ Election details must be set first</p>}
+        </div>
       </div>
-    </section>
+    </motion.div>
   );
 }
