@@ -1,223 +1,178 @@
-// app/results/page.tsx
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
-import Web3 from "web3";
-import { motion } from "framer-motion";
-import SignHeader from "@/components/ui/signHeader";
-import { votingAbi, votingAddress } from "../artifacts/votingArtifact.js";
+import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import axios from "axios";
+import { showToast } from "../../../pages/api/admin/showToast";
+import { Eye, EyeOff } from "lucide-react";
 
-interface Candidate {
-  candidateId: number;
-  name:        string;
-  slogan:      string;
-  votes:       number;
-}
+export default function ChangePassword() {
+  const router = useRouter();
 
-interface Winner {
-  candidateId: number;
-  name:        string;
-  votes:       number;
-}
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [error, setError] = useState("");
+  const [strength, setStrength] = useState<"weak" | "medium" | "strong" | "">("");
 
-const loadingMessages = [
-  "Counting votes securely…",
-  "Analyzing on-chain data…",
-  "Finalizing results…",
-];
+  const debounceTimeout = useRef<NodeJS.Timeout | null>(null);
+  const lastStrength = useRef<string>("");
 
-function formatSecondsToHHMMSS(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  return [h, m, s]
-    .map((val) => val.toString().padStart(2, "0"))
-    .join(":");
-}
+  // Evaluate password strength allowing *any* non-alphanumeric as "special"
+  const evaluateStrength = (password: string): "weak" | "medium" | "strong" | "" => {
+    if (!password) return "";
+    const strongRegex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+    const mediumRegex = /^(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{6,}$/;
+    if (strongRegex.test(password)) return "strong";
+    if (mediumRegex.test(password)) return "medium";
+    return "weak";
+  };
 
-export default function ResultsPage() {
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [winner,     setWinner]     = useState<Winner|null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [msgIndex,   setMsgIndex]   = useState(0);
-  const [timeLeft,   setTimeLeft]   = useState<number|null>(null);
-  const [percent,    setPercent]    = useState(100);
+  const getStrengthColor = () => {
+    switch (strength) {
+      case "weak":
+        return "bg-red-500 w-1/3";
+      case "medium":
+        return "bg-yellow-500 w-2/3";
+      case "strong":
+        return "bg-green-500 w-full";
+      default:
+        return "bg-gray-700 w-0";
+    }
+  };
 
-  const startRef = useRef<number>(0);
-  const endRef   = useRef<number>(0);
+  // Require at least 8 chars, one uppercase, one lowercase, one digit, one special (non-alphanumeric)
+  const validatePassword = (password: string) => {
+    const regex = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+    return regex.test(password);
+  };
 
-  // cycle loading messages every 3s
+  // Debounced strength check
   useEffect(() => {
-    const iv = setInterval(() => {
-      setMsgIndex(i => (i + 1) % loadingMessages.length);
-    }, 3000);
-    return () => clearInterval(iv);
-  }, []);
-
-  useEffect(() => {
-    const fetchResults = async () => {
-      const web3   = new Web3(process.env.NEXT_PUBLIC_RPC_URL || "http://127.0.0.1:8545");
-      const voting = new web3.eth.Contract(votingAbi as any, votingAddress);
-      try {
-        // First check if voting has been started
-        const votingStart = Number(await voting.methods.votingStart().call());
-        const votingEnd = Number(await voting.methods.votingEnd().call());
-        const detailsSet = await voting.methods.detailsSet().call();
-        
-        // If no election has been set up or started, show appropriate message
-        if (!detailsSet || votingStart === 0) {
-          setLoading(false);
-          return;
-        }
-
-        // get votingEnd timestamp on-chain
-        endRef.current   = votingEnd;
-        // grab the block timestamp when we start
-        const block      = await web3.eth.getBlock("latest");
-        startRef.current = Number(block.timestamp);
-
-        // If voting is still ongoing, show countdown
-        if (Date.now() / 1000 < votingEnd) {
-          // update progress bar until votingEnd
-          const barInterval = setInterval(() => {
-            const now     = Date.now() / 1000;
-            const total   = endRef.current - startRef.current;
-            const elapsed = now - startRef.current;
-            const left    = Math.max(0, endRef.current - now);
-            setTimeLeft(left);
-            setPercent(Math.max(0, 100 - (elapsed / total) * 100));
-            if (now >= endRef.current) {
-              clearInterval(barInterval);
-              // Refresh the page to show results
-              window.location.reload();
-            }
-          }, 1000);
-
-          return; // Stay in loading state while voting is active
-        }
-
-        // Voting has ended, fetch results
-        const count = Number(await voting.methods.getCandidateCount().call());
-        const arr: Candidate[] = [];
-        for (let i = 0; i < count; i++) {
-          const c: any = await voting.methods.candidates(i).call();
-          arr.push({
-            candidateId: i + 1,
-            name:        c.name,
-            slogan:      c.slogan,
-            votes:       Number(c.votes),
-          });
-        }
-
-        // pick the top vote-getter
-        let top = arr[0] || null;
-        for (const cand of arr) {
-          if (top === null || cand.votes > top.votes) top = cand;
-        }
-
-        setCandidates(arr);
-        if (top) setWinner({ candidateId: top.candidateId, name: top.name, votes: top.votes });
-      } catch (err) {
-        console.error("Results fetch error:", err);
-      } finally {
-        setLoading(false);
+    if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
+    if (!newPassword) {
+      setStrength("");
+      return;
+    }
+    debounceTimeout.current = setTimeout(() => {
+      const current = evaluateStrength(newPassword);
+      setStrength(current);
+      if (current !== lastStrength.current) {
+        lastStrength.current = current;
+        if (current === "weak") showToast("Weak password", "error");
+        else if (current === "medium") showToast("Medium strength password", "error");
+        else if (current === "strong") showToast("Strong password 💪", "success");
       }
-    };
+    }, 300);
+  }, [newPassword]);
 
-    fetchResults();
-  }, []);
+  const handleChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(""); // clear previous errors
 
-  // Loading state - voting active or not started
-  if (loading) {
-    return (
-      <section className="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center space-y-4">
-        {timeLeft !== null ? (
-          <>
-            <p className="text-indigo-300">
-              Voting ends in{" "}
-              {formatSecondsToHHMMSS(timeLeft)}
-            </p>
-            <div className="w-full max-w-md bg-gray-700 h-3 rounded-full">
-              <div
-                className="h-3 rounded-full bg-indigo-500 transition-all"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-indigo-500"/>
-            <p className="text-indigo-300 font-semibold">
-              {loadingMessages[msgIndex]}
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="text-center py-16">
-              <h2 className="text-2xl font-bold text-indigo-400 mb-4">Election Not Started</h2>
-              <p className="text-gray-400 text-lg mb-2">
-                The election has not been started by the admin yet.
-              </p>
-              <p className="text-gray-500">
-                Please wait for the admin to set up and start the voting process.
-              </p>
-            </div>
-          </>
-        )}
-      </section>
-    );
-  }
+    const voterId = localStorage.getItem("voterId");
+    if (!voterId) {
+      showToast("No Voter ID found. Please log in again.", "error");
+      return;
+    }
+
+    if (!validatePassword(newPassword)) {
+      setError("Password must be at least 8 characters long and include uppercase, lowercase, number, and special character.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    try {
+      await axios.post("/api/admin/change-password", { voterId, newPassword });
+      localStorage.removeItem("voterId");
+      showToast("Password updated successfully.", "success");
+      router.push("/signinusers");
+    } catch (err) {
+      showToast("Error updating password. Please try again.", "error");
+      console.error("Error updating password", err);
+    }
+  };
+
+  const inputStyles =
+    "w-full mb-2 text-black p-2 rounded pr-10 focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
   return (
-    <section className="bg-gray-950 text-white min-h-screen">
-      <SignHeader/>
-      <div className="container mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold text-center mb-8 text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-indigo-200">
-          Election Results
-        </h1>
+    <section className="min-h-screen flex items-center justify-center bg-gray-900 text-white px-4">
+      <form onSubmit={handleChange} className="bg-gray-800 p-8 rounded-xl shadow-lg max-w-md w-full">
+        <h2 className="text-2xl font-bold mb-6 text-center">Change Your Password</h2>
 
-        {!winner ? (
-          <div className="text-center py-16">
-            <p className="text-indigo-400 text-xl">No results available.</p>
-          </div>
-        ) : (
-          <>
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="max-w-lg mx-auto bg-gray-800 p-6 rounded-lg mb-8 text-center shadow-lg"
-            >
-              <h2 className="text-2xl font-bold mb-2">Winner</h2>
-              <p className="text-xl">{winner.name}</p>
-              <p className="mt-1 text-white/80">
-                Candidate ID: {winner.candidateId}
-              </p>
-              <p className="mt-2 text-lg text-green-400">
-                Votes: {winner.votes}
-              </p>
-            </motion.div>
+        {/* New Password */}
+        <div className="relative mb-2">
+          <input
+            type={showNew ? "text" : "password"}
+            className={inputStyles}
+            placeholder="New Password"
+            value={newPassword}
+            onChange={(e) => {
+              setNewPassword(e.target.value);
+              setError("");
+            }}
+            required
+          />
+          <button
+            type="button"
+            className="absolute top-2 right-3 text-gray-600 hover:text-white"
+            onClick={() => setShowNew(!showNew)}
+          >
+            {showNew ? <EyeOff size={20} /> : <Eye size={20} />}
+          </button>
+        </div>
 
-            <div className="grid md:grid-cols-3 gap-6">
-              {candidates.map((c, i) => (
-                <div
-                  key={c.candidateId}
-                  className={`bg-gray-800 p-6 rounded-lg ${
-                    c.candidateId === winner.candidateId
-                      ? "border-4 border-indigo-600"
-                      : ""
-                  }`}
-                >
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-xl font-semibold">{c.name}</h3>
-                    <span className="text-indigo-400 font-bold">
-                      {c.votes}
-                    </span>
-                  </div>
-                  <p className="text-indigo-200 mb-2">"{c.slogan}"</p>
-                </div>
-              ))}
-            </div>
-          </>
+        {/* Strength Bar */}
+        <div className="h-2 bg-gray-700 rounded mb-2 overflow-hidden">
+          <div className={`h-full ${getStrengthColor()} transition-all duration-300`} />
+        </div>
+
+        {/* Confirm Password */}
+        <div className="relative mb-2">
+          <input
+            type={showConfirm ? "text" : "password"}
+            className={inputStyles}
+            placeholder="Confirm Password"
+            value={confirmPassword}
+            onChange={(e) => {
+              setConfirmPassword(e.target.value);
+              setError("");
+            }}
+            required
+          />
+          <button
+            type="button"
+            className="absolute top-2 right-3 text-gray-600 hover:text-white"
+            onClick={() => setShowConfirm(!showConfirm)}
+          >
+            {showConfirm ? <EyeOff size={20} /> : <Eye size={20} />}
+          </button>
+        </div>
+
+        {/* Match Indicator */}
+        {confirmPassword.length > 0 && (
+          <p className={`text-sm mb-2 ${newPassword === confirmPassword ? "text-green-400" : "text-red-400"}`}>
+            {newPassword === confirmPassword ? "✅ Passwords match" : "❌ Passwords do not match"}
+          </p>
         )}
-      </div>
+
+        <p className="text-sm text-gray-400 mb-3">
+          Must be at least 8 characters and include uppercase, lowercase, number, and special character.
+        </p>
+
+        {/* Error Message */}
+        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+
+        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded transition">
+          Update Password
+        </button>
+      </form>
     </section>
   );
 }
